@@ -1,9 +1,17 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import re
 import dns.resolver
 from email_validator import validate_email, EmailNotValidError
 from urllib.parse import urlparse
 import logging
+import pandas as pd
+import PyPDF2
+import pdfplumber
+import tabula
+import io
+import os
+from datetime import datetime
+import tempfile
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -49,9 +57,231 @@ class EmailValidator:
         except EmailNotValidError as e:
             return False, str(e)
 
-# Initialize validator
-validator = EmailValidator()
+class PDFToCSVConverter:
+    def __init__(self):
+        self.supported_methods = ['pdfplumber', 'tabula', 'pypdf2']
+    
+    def extract_text_pypdf2(self, pdf_file):
+        """Extract text using PyPDF2"""
+        try:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text_data = []
+            
+            for page_num, page in enumerate(pdf_reader.pages):
+                text = page.extract_text()
+                if text.strip():
+                    # Split text into lines and create basic structure
+                    lines = [line.strip() for line in text.split('\n') if line.strip()]
+                    for line in lines:
+                        text_data.append({
+                            'page': page_num + 1,
+                            'content': line
+                        })
+            
+            return pd.DataFrame(text_data)
+        except Exception as e:
+            raise Exception(f"PyPDF2 extraction failed: {str(e)}")
+    
+    def extract_tables_pdfplumber(self, pdf_file):
+        """Extract tables using pdfplumber"""
+        try:
+            all_tables = []
+            
+            with pdfplumber.open(pdf_file) as pdf:
+                for page_num, page in enumerate(pdf.pages):
+                    tables = page.extract_tables()
+                    
+                    if tables:
+                        for table_num, table in enumerate(tables):
+                            # Convert table to DataFrame
+                            if table and len(table) > 0:
+                                # Use first row as headers if it looks like headers
+                                headers = table[0] if table[0] else [f'Column_{i}' for i in range(len(table[0]) if table else 0)]
+                                data = table[1:] if len(table) > 1 else []
+                                
+                                if data:
+                                    df = pd.DataFrame(data, columns=headers)
+                                    df['page'] = page_num + 1
+                                    df['table'] = table_num + 1
+                                    all_tables.append(df)
+                    else:
+                        # If no tables, extract text
+                        text = page.extract_text()
+                        if text and text.strip():
+                            lines = [line.strip() for line in text.split('\n') if line.strip()]
+                            text_df = pd.DataFrame({
+                                'content': lines,
+                                'page': page_num + 1
+                            })
+                            all_tables.append(text_df)
+            
+            if all_tables:
+                # Combine all tables/text
+                result_df = pd.concat(all_tables, ignore_index=True, sort=False)
+                return result_df
+            else:
+                return pd.DataFrame({'message': ['No extractable content found']})
+                
+        except Exception as e:
+            raise Exception(f"PDFplumber extraction failed: {str(e)}")
+    
+    def extract_tables_tabula(self, pdf_file):
+        """Extract tables using tabula-py"""
+        try:
+            # Save uploaded file temporarily for tabula
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                pdf_file.seek(0)
+                tmp_file.write(pdf_file.read())
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # Extract all tables from all pages
+                tables = tabula.read_pdf(tmp_file_path, pages='all', multiple_tables=True)
+                
+                if tables:
+                    all_tables = []
+                    for i, table in enumerate(tables):
+                        table['table_number'] = i + 1
+                        all_tables.append(table)
+                    
+                    result_df = pd.concat(all_tables, ignore_index=True, sort=False)
+                    return result_df
+                else:
+                    return pd.DataFrame({'message': ['No tables found in PDF']})
+                    
+            finally:
+                # Clean up temporary file
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
+                    
+        except Exception as e:
+            raise Exception(f"Tabula extraction failed: {str(e)}")
+    
+    def convert_pdf_to_csv(self, pdf_file, method='auto'):
+        """Main conversion method"""
+        if method == 'auto':
+            # Try methods in order of preference
+            methods_to_try = ['pdfplumber', 'tabula', 'pypdf2']
+        else:
+            methods_to_try = [method] if method in self.supported_methods else ['pdfplumber']
+        
+        last_error = None
+        
+        for extraction_method in methods_to_try:
+            try:
+                pdf_file.seek(0)  # Reset file pointer
+                
+                if extraction_method == 'pdfplumber':
+                    df = self.extract_tables_pdfplumber(pdf_file)
+                elif extraction_method == 'tabula':
+                    df = self.extract_tables_tabula(pdf_file)
+                elif extraction_method == 'pypdf2':
+                    df = self.extract_text_pypdf2(pdf_file)
+                
+                if not df.empty:
+                    return df, extraction_method
+                    
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Method {extraction_method} failed: {str(e)}")
+                continue
+        
+        # If all methods failed
+        raise Exception(f"All extraction methods failed. Last error: {str(last_error)}")
 
+# Initialize components
+validator = EmailValidator()
+pdf_converter = PDFToCSVConverter()
+
+@app.route('/convert-pdf-to-csv', methods=['POST'])
+def convert_pdf_to_csv():
+    """PDF to CSV conversion endpoint"""
+    try:
+        # Check if file was uploaded
+        if 'file' not in request.files:
+            return jsonify({
+                'error': 'No file uploaded',
+                'success': False
+            }), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({
+                'error': 'No file selected',
+                'success': False
+            }), 400
+        
+        if not file.filename.lower().endswith('.pdf'):
+            return jsonify({
+                'error': 'File must be a PDF',
+                'success': False
+            }), 400
+        
+        # Get optional parameters
+        method = request.form.get('method', 'auto')
+        return_format = request.form.get('format', 'json')  # json or csv
+        
+        # Convert PDF to DataFrame
+        df, used_method = pdf_converter.convert_pdf_to_csv(file, method)
+        
+        result = {
+            'success': True,
+            'method_used': used_method,
+            'rows_extracted': len(df),
+            'columns': list(df.columns),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if return_format.lower() == 'csv':
+            # Return CSV file
+            output = io.StringIO()
+            df.to_csv(output, index=False)
+            output.seek(0)
+            
+            return send_file(
+                io.BytesIO(output.getvalue().encode()),
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f"{file.filename.rsplit('.', 1)[0]}_converted.csv"
+            )
+        else:
+            # Return JSON with data
+            result['data'] = df.to_dict('records')
+            return jsonify(result), 200
+            
+    except Exception as e:
+        logger.error(f"Error converting PDF to CSV: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'success': False
+        }), 500
+
+@app.route('/pdf-to-csv-info', methods=['GET'])
+def pdf_to_csv_info():
+    """Get information about PDF to CSV conversion"""
+    return jsonify({
+        'service': 'PDF to CSV Converter',
+        'supported_methods': pdf_converter.supported_methods,
+        'usage': {
+            'endpoint': '/convert-pdf-to-csv',
+            'method': 'POST',
+            'parameters': {
+                'file': 'PDF file (required)',
+                'method': 'Extraction method: auto, pdfplumber, tabula, pypdf2 (optional, default: auto)',
+                'format': 'Response format: json or csv (optional, default: json)'
+            },
+            'example_curl': 'curl -X POST -F "file=@document.pdf" -F "method=auto" -F "format=json" http://localhost:5000/convert-pdf-to-csv'
+        },
+        'methods_description': {
+            'pdfplumber': 'Best for structured tables and mixed content',
+            'tabula': 'Specialized for table extraction',
+            'pypdf2': 'Basic text extraction, fallback method',
+            'auto': 'Tries all methods automatically'
+        }
+    }), 200
+
+# Existing email validation endpoints
 @app.route('/validate-email', methods=['POST'])
 def validate_email_endpoint():
     """Email validation endpoint"""
@@ -161,24 +391,43 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'service': 'Email Validation API',
-        'version': '1.0.0'
+        'service': 'Multi-Purpose API',
+        'version': '2.0.0',
+        'features': ['Email Validation', 'PDF to CSV Conversion']
     }), 200
 
 @app.route('/', methods=['GET'])
 def index():
     """API documentation endpoint"""
     return jsonify({
-        'service': 'Email Validation API',
-        'version': '1.0.0',
+        'service': 'Multi-Purpose API',
+        'version': '2.0.0',
         'endpoints': {
             'POST /validate-email': 'Comprehensive email validation',
             'POST /validate-email-simple': 'Simple format validation',
+            'POST /convert-pdf-to-csv': 'Convert PDF to CSV',
+            'GET /pdf-to-csv-info': 'PDF conversion information',
             'GET /health': 'Health check',
             'GET /': 'API documentation'
         },
-        'usage': {
-            'validate-email': {
+        'features': {
+            'email_validation': {
+                'format_validation': True,
+                'domain_verification': True,
+                'disposable_email_detection': True,
+                'comprehensive_validation': True
+            },
+            'pdf_conversion': {
+                'supported_formats': ['PDF'],
+                'output_formats': ['CSV', 'JSON'],
+                'extraction_methods': ['pdfplumber', 'tabula', 'pypdf2', 'auto'],
+                'table_extraction': True,
+                'text_extraction': True
+            }
+        },
+        'usage_examples': {
+            'email_validation': {
+                'endpoint': '/validate-email',
                 'method': 'POST',
                 'body': {'email': 'user@example.com'},
                 'response': {
@@ -191,6 +440,16 @@ def index():
                         'comprehensive_valid': True
                     },
                     'errors': []
+                }
+            },
+            'pdf_conversion': {
+                'endpoint': '/convert-pdf-to-csv',
+                'method': 'POST',
+                'content_type': 'multipart/form-data',
+                'parameters': {
+                    'file': 'PDF file',
+                    'method': 'auto (optional)',
+                    'format': 'json (optional)'
                 }
             }
         }
