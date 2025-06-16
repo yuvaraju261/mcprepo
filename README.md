@@ -1,16 +1,21 @@
-# Email Validation API
+# PDF to CSV Converter API
 
-A robust Python Flask API for comprehensive email validation.
+A comprehensive Flask-based API service that provides both email validation and PDF to CSV conversion functionality.
 
 ## Features
 
-- **Format Validation**: Validates email format using regex patterns
-- **Domain Validation**: Checks if the domain exists and has MX records
-- **Disposable Email Detection**: Identifies and blocks disposable email addresses
-- **Comprehensive Validation**: Uses RFC-compliant validation with the `email-validator` library
-- **Multiple Endpoints**: Both comprehensive and simple validation options
-- **Health Check**: Built-in health monitoring endpoint
-- **Detailed Response**: Provides breakdown of all validation checks
+### Email Validation
+- Format validation using regex
+- Domain existence verification via DNS MX records
+- Disposable email detection
+- Comprehensive RFC-compliant validation
+
+### PDF to CSV Conversion
+- Multiple extraction methods: PDFplumber, Tabula, PyPDF2
+- Automatic method selection
+- Support for both tabular and text data
+- JSON and CSV output formats
+- Batch processing capabilities
 
 ## Installation
 
@@ -30,167 +35,210 @@ pip install -r requirements.txt
 python app.py
 ```
 
-The API will be available at `http://localhost:5000`
-
 ## API Endpoints
 
-### 1. Comprehensive Email Validation
-**POST** `/validate-email`
+### 1. PDF to CSV Conversion
 
-Validates email with multiple checks including format, domain existence, disposable email detection, and RFC compliance.
+#### POST /convert-pdf-to-csv
+Convert PDF files to CSV format with multiple extraction methods.
 
-**Request:**
-```json
-{
-  "email": "user@example.com"
-}
-```
+**Parameters:**
+- `file`: PDF file (required)
+- `method`: Extraction method - `auto`, `pdfplumber`, `tabula`, `pypdf2` (optional, default: `auto`)
+- `format`: Response format - `json` or `csv` (optional, default: `json`)
 
-**Response:**
-```json
-{
-  "email": "user@example.com",
-  "valid": true,
-  "checks": {
-    "format_valid": true,
-    "domain_exists": true,
-    "is_disposable": false,
-    "comprehensive_valid": true
-  },
-  "errors": []
-}
-```
-
-### 2. Simple Email Validation
-**POST** `/validate-email-simple`
-
-Performs basic format validation only.
-
-**Request:**
-```json
-{
-  "email": "user@example.com"
-}
-```
-
-**Response:**
-```json
-{
-  "email": "user@example.com",
-  "valid": true,
-  "message": "Valid email format"
-}
-```
-
-### 3. Health Check
-**GET** `/health`
-
-Returns the health status of the API.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "service": "Email Validation API",
-  "version": "1.0.0"
-}
-```
-
-### 4. API Documentation
-**GET** `/`
-
-Returns API documentation and usage examples.
-
-## Usage Examples
-
-### Using cURL
-
+**Example using curl:**
 ```bash
-# Comprehensive validation
-curl -X POST http://localhost:5000/validate-email \
-  -H "Content-Type: application/json" \
-  -d '{"email": "test@gmail.com"}'
+# Get JSON response
+curl -X POST -F "file=@document.pdf" -F "method=auto" -F "format=json" http://localhost:5000/convert-pdf-to-csv
 
-# Simple validation
-curl -X POST http://localhost:5000/validate-email-simple \
-  -H "Content-Type: application/json" \
-  -d '{"email": "test@gmail.com"}'
-
-# Health check
-curl http://localhost:5000/health
+# Download CSV file
+curl -X POST -F "file=@document.pdf" -F "format=csv" http://localhost:5000/convert-pdf-to-csv -o output.csv
 ```
 
-### Using Python requests
-
+**Example using Python requests:**
 ```python
 import requests
 
-# Comprehensive validation
-response = requests.post(
-    'http://localhost:5000/validate-email',
-    json={'email': 'test@gmail.com'}
-)
-print(response.json())
-
-# Simple validation
-response = requests.post(
-    'http://localhost:5000/validate-email-simple',
-    json={'email': 'test@gmail.com'}
-)
-print(response.json())
+# Upload PDF and get JSON response
+with open('document.pdf', 'rb') as f:
+    response = requests.post(
+        'http://localhost:5000/convert-pdf-to-csv',
+        files={'file': f},
+        data={'method': 'auto', 'format': 'json'}
+    )
+    
+result = response.json()
+print(f"Extracted {result['rows_extracted']} rows using {result['method_used']}")
 ```
 
-## Validation Features
+#### GET /pdf-to-csv-info
+Get information about PDF conversion capabilities and usage.
 
-### Format Validation
-- Uses regex pattern to validate basic email structure
-- Checks for valid characters, @ symbol, and domain format
+### 2. Email Validation
 
-### Domain Validation
-- Performs DNS lookup to verify domain exists
-- Checks for MX (Mail Exchange) records
+#### POST /validate-email
+Comprehensive email validation with multiple checks.
 
-### Disposable Email Detection
-- Maintains a list of known disposable email providers
-- Blocks common temporary email services
+**Request body:**
+```json
+{
+    "email": "user@example.com"
+}
+```
 
-### Comprehensive Validation
-- Uses the `email-validator` library for RFC-compliant validation
-- Performs internationalized domain name (IDN) validation
-- Checks for deliverability indicators
+**Response:**
+```json
+{
+    "email": "user@example.com",
+    "valid": true,
+    "checks": {
+        "format_valid": true,
+        "domain_exists": true,
+        "is_disposable": false,
+        "comprehensive_valid": true
+    },
+    "errors": []
+}
+```
+
+#### POST /validate-email-simple
+Simple format-only email validation.
+
+### 3. Utility Endpoints
+
+#### GET /health
+Health check endpoint.
+
+#### GET /
+API documentation and usage information.
+
+## PDF Extraction Methods
+
+### 1. PDFplumber (Recommended)
+- **Best for:** Structured tables and mixed content
+- **Strengths:** Excellent table detection, handles complex layouts
+- **Use case:** Financial reports, data sheets, structured documents
+
+### 2. Tabula
+- **Best for:** Table-heavy documents
+- **Strengths:** Specialized table extraction, handles complex table structures
+- **Use case:** Scientific papers, statistical reports, tabular data
+
+### 3. PyPDF2
+- **Best for:** Simple text extraction
+- **Strengths:** Reliable text extraction, lightweight
+- **Use case:** Text documents, simple reports, fallback method
+
+### 4. Auto Mode
+- **Best for:** General use
+- **Behavior:** Tries methods in order: pdfplumber → tabula → pypdf2
+- **Use case:** When you're unsure about document structure
 
 ## Error Handling
 
-The API provides detailed error messages for various validation failures:
+The API provides comprehensive error handling:
 
-- **Invalid email format**: Basic format validation failed
-- **Domain does not exist**: Domain has no MX records or doesn't exist
-- **Disposable email**: Email is from a disposable email provider
-- **Comprehensive validation failed**: RFC compliance or other advanced checks failed
+- **400 Bad Request:** Missing file, invalid file format, empty file
+- **500 Internal Server Error:** Processing errors, extraction failures
 
-## Docker Support
+Example error response:
+```json
+{
+    "error": "File must be a PDF",
+    "success": false
+}
+```
 
-Create a `Dockerfile` for containerized deployment:
+## Response Formats
 
+### JSON Response
+```json
+{
+    "success": true,
+    "method_used": "pdfplumber",
+    "rows_extracted": 150,
+    "columns": ["Name", "Age", "City", "page", "table"],
+    "timestamp": "2025-06-16T16:11:56",
+    "data": [
+        {"Name": "John", "Age": "30", "City": "NYC", "page": 1, "table": 1},
+        {"Name": "Jane", "Age": "25", "City": "LA", "page": 1, "table": 1}
+    ]
+}
+```
+
+### CSV Response
+Direct CSV download with appropriate headers and filename.
+
+## Deployment
+
+### Local Development
+```bash
+python app.py
+```
+The API will be available at `http://localhost:5000`
+
+### Production Deployment
+Use a WSGI server like Gunicorn:
+```bash
+pip install gunicorn
+gunicorn -w 4 -b 0.0.0.0:5000 app:app
+```
+
+### Docker Deployment
 ```dockerfile
 FROM python:3.9-slim
 
 WORKDIR /app
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
+
+# Install Java for tabula-py
+RUN apt-get update && apt-get install -y default-jdk
 
 COPY . .
-
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "app:app"]
 ```
 
-Build and run:
+## Dependencies
+
+- **Flask**: Web framework
+- **pandas**: Data manipulation
+- **pdfplumber**: PDF table extraction
+- **tabula-py**: Advanced table extraction
+- **PyPDF2**: Basic PDF processing
+- **email-validator**: Email validation
+- **dnspython**: DNS resolution
+
+## Performance Considerations
+
+- **File Size**: Recommended maximum 50MB per PDF
+- **Processing Time**: Varies by document complexity (1-30 seconds typical)
+- **Memory Usage**: Approximately 2-3x file size during processing
+- **Concurrent Requests**: Limit concurrent PDF processing based on server resources
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Tabula fails to extract tables:**
+   - Ensure Java is installed (`java -version`)
+   - Try alternative methods: `pdfplumber` or `pypdf2`
+
+2. **Empty extraction results:**
+   - PDF might be image-based (scanned document)
+   - Try OCR preprocessing with tools like Tesseract
+
+3. **Memory errors:**
+   - Reduce file size or split large PDFs
+   - Increase server memory allocation
+
+### Logging
+The application logs all operations. Check logs for detailed error information:
 ```bash
-docker build -t email-validator .
-docker run -p 5000:5000 email-validator
+tail -f app.log
 ```
 
 ## Contributing
@@ -198,9 +246,16 @@ docker run -p 5000:5000 email-validator
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
+4. Add tests
 5. Submit a pull request
 
 ## License
 
-This project is open source and available under the [MIT License](LICENSE).
+MIT License - see LICENSE file for details.
+
+## Support
+
+For issues and support:
+- Create an issue on GitHub
+- Check the API documentation at `/` endpoint
+- Review logs for detailed error information
